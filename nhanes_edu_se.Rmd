@@ -1,0 +1,2953 @@
+---
+title: 'NHANES: Education and Refraction'
+author: "Stefan Nickels"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+  html_notebook:
+    number_sections: yes
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+# Intro
+
+Code related to PONE-D-18-24705
+
+# Setup
+
+```{r setup, error=TRUE, echo=TRUE, warnings=TRUE, message=TRUE}
+Sys.time()
+R.Version()
+
+data.raw <- file.path("data", "raw")
+
+library(nhanesA) # package to retrieve NHANES data
+library(ggplot2) # advanced graphics
+library(reshape2)
+library(survey)  # http://r-survey.r-forge.r-project.org/survey/index.html
+library(knitr)
+library(tableone) #
+library(MASS) # to calculate confidence intervals
+library(sinaplot)
+
+citation("nhanesA")
+citation("survey")
+citation("ggplot2")
+citation("tableone")
+citation("knitr")
+citation("MASS")
+citation("sinaplot")
+
+R.Version()
+
+```
+
+
+```{r turn off lights, error=TRUE}
+knitr::opts_chunk$set(echo=FALSE, warnings=FALSE, message=FALSE, fig.path='figs/') # suppress source code, save figures in folder
+```
+
+
+"Your closest collaborator is you six months ago, but you don't reply to emails."
+https://github.com/kbroman/datasciquotes
+
+
+
+# NHANES data
+
+The National Health and Nutrition Examination Survey (NHANES) is a survey research program conducted by the National Center for Health Statistics (NCHS) to assess the health and nutritional status of adults and children in the United States: 
+https://www.cdc.gov/nchs/nhanes/index.htm
+https://en.wikipedia.org/wiki/National_Health_and_Nutrition_Examination_Survey
+
+Public use data files are available: 
+
+https://www.cdc.gov/nchs/data/nhanes/nhanes_release_policy.pdf
+https://wwwn.cdc.gov/nchs/nhanes/
+
+
+
+## VIX (Vision examination) 
+
+12+ years
+
+https://wwwn.cdc.gov/Nchs/Nhanes/1999-2000/VIX.htm
+
+```{r VIX, error=TRUE}
+nhanesSearchTableNames('VIX', includerdc=TRUE, details=TRUE)
+```
+
+* SEQN - Respondent sequence number
+* VIXORSM - OR right sphere, average
+* VIXOLSM - OR left sphere, average
+* VIXORCM - OR right cylinder, average
+* VIXOLCM - OR left cylinder, average
+* VIXORAM - OR right axis, average
+* VIXOLAM - OR left axis, average
+* VIDRVA - Right visual acuity, presenting
+* VIDLVA - Left visual acuity, presenting 
+* VIDORFM - OR right confidence level reading
+* VIDOLFM - OR left confidence level reading
+* VIQ220 - Glasses/contact lenses worn for distance
+* VIXKRDM - Right keratometry power, average (D) 
+* VIXKRCD - Right keratometry cylinder 
+* VIXKRCG - Right keratometry axis (deg)
+* VIXKLDM - Left keratometry power, average (D) 
+* VIXKLCD - Left keratometry cylinder 
+* VIXKLCG - Left keratometry axis (deg)
+* VIQ180 - Eye surgery for near sightedness?
+
+
+## DEMO: Demographics Data
+https://wwwn.cdc.gov/Nchs/Nhanes/1999-2000/DEMO.htm
+
+included in every survey 
+
+* INDFMPIR 
+* SEQN - Respondent sequence number
+* RIAGENDR - Gender: 1	Male	2	Female
+* RIDAGEEX - Exam Age in Months: when analyzing anthropometric data on children and youths from birth through age 19, RIDAGEEX would be used
+* RIDRETH1 - Race/Ethnicity, self-identification, 
+1	Mexican American
+2	Other Hispanic
+3	Non-Hispanic White
+4	Non-Hispanic Black	
+5	Other Race - Including Multi-Racial
+* DMDBORN - In what country were you born? (2007: DMDBORN2)
+1 Born in 50 US States or Washington, DC	
+2 Born in Mexico
+3 Born Elsewhere
+7,9,. - missing 
+* stratum (SDMVSTRA) - for variance estimation
+* PSU (SDMVPSU) - for variance estimation
+* DMDEDUC2: This variable is the highest grade or level of education completed by adults 20 years and older. The response categories are: less than 9th grade education, 9-11th grade education (includes 12th grade and no diploma), High school graduate/GED, some college or associates (AA) degree, and college graduate or higher. DMDEDUC2 provides more detailed information on education levels of adults compared to the categories released previously (variable: DMDEDUC). 
+
+## Laboratory Data: Vitamin D (VID)
+
+
+not available for survey cycle 1999
+
+```{r VID, error=TRUE}
+nhanesSearchTableNames('VID', includerdc=TRUE, details=TRUE)
+
+nhanesTableVars('LAB', 'VID_B')
+nhanesTableVars('LAB', 'VID_C')
+nhanesTableVars('LAB', 'VID_D')
+nhanesTableVars('LAB', 'VID_E')
+
+```
+
+
+* SEQN - Respondent sequence number
+* LBDVIDMS - Vitamin D (nmol/L)
+
+Analytic Notes
+See Analytical Note for 25-Hydroxyvitamin D Data Analysis using NHANES III (1988-1994), NHANES 2001-2006, and NHANES 2007-2010 at 
+https://wwwn.cdc.gov/nchs/nhanes/vitamind/analyticalnote.aspx
+
+"It is highly recommended that researchers use the LC-MS/MS-equivalent data for all analyses."
+
+# Load data
+
+Download once, then use previously saved data files.
+
+## Load functions
+
+```{r load NHANES functions, error=TRUE}
+
+LoadNHANES <- function(year) {
+  # Load NHANES data
+  #
+  # Args:
+  #   year: A, B, C, D, E 
+  #
+  # Returns: 
+  #    data.frame with NHANES data 
+  
+  # survey cycle 1999 data files are lacking a suffix
+  # survey cycle 1999 without Vit D measurements
+  # survey cycle 2007 with different Vit D file name 
+  if (year=="A") {
+    demo.name <- "DEMO"
+    vix.name <- "VIX"
+  } else {
+    demo.name <- paste0("DEMO_", year)
+    vix.name <- paste0("VIX_", year)
+    vid.name <- paste0("VID_", year)
+    vid <- nhanes(vid.name)
+    if (year=="E") {
+      keep <- c("SEQN", "LBXVIDMS")
+      vid <- vid[keep]
+      rm(keep)
+      names(vid) <- c("SEQN", "VITD")
+    } else {
+      keep <- c("SEQN", "LBDVIDMS")
+      vid <- vid[keep]
+      rm(keep)
+      names(vid) <- c("SEQN", "VITD")
+    }
+  }
+  
+  
+  demo <- nhanes(demo.name)
+  vix <- nhanes(vix.name)
+  
+  # DEMO: add NA sample weight columns to avoid poblems with rbind later on
+  # (different sample weight variables available depending on survey cycle)
+  # survey cycle 2007 with different country of birth file name 
+  if (year %in% c("A","B")) {
+    demo$WTMEC2YR <- NA
+  } else {
+    demo$WTMEC4YR <- NA
+  }
+  
+  if (year == "E") {
+  keep <- c("SEQN", 
+            "RIAGENDR", 
+            "RIDSTATR",
+            "RIDEXMON",
+            "RIDAGEEX",
+            "RIDRETH1", "DMDBORN2", "INDFMPIR",
+            "SDMVSTRA", "SDMVPSU", 
+            "WTMEC2YR", "WTMEC4YR",
+            "DMDEDUC2")
+  } else {
+    keep <- c("SEQN", 
+            "RIAGENDR", 
+            "RIDSTATR",
+            "RIDEXMON",
+            "RIDAGEEX",
+            "RIDRETH1", "DMDBORN", "INDFMPIR",
+            "SDMVSTRA", "SDMVPSU", 
+            "WTMEC2YR", "WTMEC4YR",
+            "DMDEDUC2")
+  }
+
+  demo <- demo[keep]
+  rm(keep)
+  names(demo) <- c("SEQN", 
+            "RIAGENDR", 
+            "RIDSTATR",
+            "RIDEXMON",
+            "RIDAGEEX",
+            "RIDRETH1", "DMDBORN", "INDFMPIR",
+            "SDMVSTRA", "SDMVPSU", 
+            "WTMEC2YR", "WTMEC4YR",
+            "DMDEDUC2")
+  
+  # VIX
+  keep <- c("SEQN", 
+            "VIXORSM", "VIXOLSM",
+            "VIXORCM", "VIXOLCM",
+            "VIXORAM", "VIXOLAM",
+            "VIDRVA", "VIDLVA",
+            "VIDORFM", "VIDOLFM",
+            "VIQ150", "VIQ220", 
+            "VIXKRDM", "VIXKLDM",
+            "VIXKRCD", "VIXKLCD",
+            "VIXKRCG", "VIXKLCG",
+            "VIQ180", "VIQ200")
+  vix <- vix[keep]
+  rm(keep)
+  
+  nhanesdat <- merge(demo, vix, by = "SEQN", all = FALSE) 
+  
+  if (year=="A") {
+    nhanesdat$VITD <- NA
+    message(paste("survey cycle:", year, 
+                  "/ vix:", nrow(vix), 
+                  "/ demo:", nrow(demo)))
+  } else {
+    message(paste("survey cycle:", year, 
+                  "/ vix:", nrow(vix), 
+                  "/ demo:", nrow(demo),
+                  "/ vid:", nrow(vid)))
+    nhanesdat <- merge(nhanesdat, vid, by = "SEQN", all = FALSE)
+    rm(demo, vix, vid)
+  }
+  
+  
+  if (year=="A") nhanesdat$year <- "1999"
+  if (year=="B") nhanesdat$year <- "2001"
+  if (year=="C") nhanesdat$year <- "2003"
+  if (year=="D") nhanesdat$year <- "2005"
+  if (year=="E") nhanesdat$year <- "2007"
+  
+  return(nhanesdat)
+}
+
+
+```
+
+
+
+
+## Load 1999-2000
+
+```{r nhanesdat.a, error=TRUE}
+
+if (file.exists(file.path(data.raw, "nhanesdat.a.RData"))) { 
+  message("loading local file")
+  load(file.path(data.raw, "nhanesdat.a.RData")) 
+} else {
+  message("download data")
+  nhanesdat.a <- LoadNHANES("A")
+  save(nhanesdat.a, file = (file.path(data.raw, "nhanesdat.a.RData")))
+}
+
+```
+
+
+## Load 2001-2002	
+
+```{r ecq.b, error=TRUE}
+
+if (file.exists(file.path(data.raw, "nhanesdat.b.RData"))) { 
+  message("loading local file")
+  load(file.path(data.raw, "nhanesdat.b.RData")) 
+} else {
+  message("download data")
+  nhanesdat.b <- LoadNHANES("B")
+  save(nhanesdat.b, file = (file.path(data.raw, "nhanesdat.b.RData")))
+}
+
+
+```
+
+
+## Load 2003-2004
+
+```{r ecq.c, error=TRUE}
+
+if (file.exists(file.path(data.raw, "nhanesdat.c.RData"))) { 
+  message("loading local file")
+  load(file.path(data.raw, "nhanesdat.c.RData")) 
+} else {
+  message("download data")
+  nhanesdat.c <- LoadNHANES("C")
+  save(nhanesdat.c, file = (file.path(data.raw, "nhanesdat.c.RData")))
+}
+
+```
+
+
+## Load 2005-2006
+
+```{r ecq.d, error=TRUE}
+
+if (file.exists(file.path(data.raw, "nhanesdat.d.RData"))) { 
+  message("loading local file")
+  load(file.path(data.raw, "nhanesdat.d.RData")) 
+} else {
+  message("download data")
+  nhanesdat.d <- LoadNHANES("D")
+  save(nhanesdat.d, file = (file.path(data.raw, "nhanesdat.d.RData")))
+}
+
+```
+
+
+## Load 2007-2008
+
+```{r ecq.e, error=TRUE}
+
+if (file.exists(file.path(data.raw, "nhanesdat.e.RData"))) { 
+  message("loading local file")
+  load(file.path(data.raw, "nhanesdat.e.RData")) 
+} else {
+  message("download data")
+  nhanesdat.e <- LoadNHANES("E")
+  save(nhanesdat.e, file = (file.path(data.raw, "nhanesdat.e.RData")))
+}
+
+
+```
+
+
+
+
+# Prepare data
+
+## Combine data
+
+```{r combine data, error=TRUE}
+nhanesdata <- rbind(nhanesdat.a, nhanesdat.b, 
+                   nhanesdat.c, nhanesdat.d, 
+                   nhanesdat.e)
+
+rm(nhanesdat.a, nhanesdat.b, 
+                   nhanesdat.c, nhanesdat.d, 
+                   nhanesdat.e)
+```
+
+## Recode data
+
+### Functions
+
+```{r recode functions, error=TRUE}
+
+RecodeMiss <- function(variable, code.NA) {
+  # Recode specified value to missing (NA)  
+  #
+  # Args:
+  #   variable: NHANES variable to recode
+  #   code.NA: value to be replaced by NA
+  #
+  # Returns: 
+  #    variable with 88 recoded to NA 
+
+  variable[variable==code.NA]  <- NA
+ 
+  return(variable)
+}
+
+
+RecodeVisualacuity <- function(data.va) {
+  # Recodes Visual Acuity to logMAR
+  #
+  # Args:
+  #   data.va: NHANES variable: VIDRVA, VIDLVA, VIDROVA, or VIDLOVA 
+  #
+  # Returns: 
+  #    Visual acuity in logMAR 
+
+  data.va[data.va==888] <- NA
+  data.va[data.va==20]  <- 0.0
+  data.va[data.va==25]  <- 0.1
+  data.va[data.va==30]  <- 0.2
+  data.va[data.va==40]  <- 0.3
+  data.va[data.va==50]  <- 0.4
+  data.va[data.va==60]  <- 0.5
+  data.va[data.va==80]  <- 0.6
+  data.va[data.va==200] <- 1
+  data.va[data.va==666] <- 1.1 
+  
+  return(data.va)
+}
+
+
+RecodeAxis <- function(data.axis) {
+  # Recodes Axis (degree)
+  #
+  # Args:
+  #   data.axis: NHANES variable VIXORAM, VIXOLAM, VIXKRG1, VIXKRG2,
+  #                              VIXKLG1, VIXKLG2
+  #
+  # Returns: 
+  #    wearing glasses dichotomized
+
+  data.axis[data.axis==888]  <- NA
+  data.axis[data.axis==777]  <- NA
+
+  return(data.axis)
+  }
+
+
+
+deg2rad <- function(deg) {
+  # convert degree to rad  
+  #
+  # Args:
+  #   degree
+  #
+  # Returns: 
+  #    rad 
+  
+  rad <- (deg * pi / (180))
+  return (rad)
+}
+
+
+DichotomizeMyopia <- function(sph.equ) {
+  # Dichotomizes moypia
+  #
+  # Args:
+  #   sph.equ: spherical equivalent in D 
+  #
+  # Returns: 
+  #    factor variable, dichotomized refraction 
+
+  sph.equ.cat <- sph.equ
+  sph.equ.cat[sph.equ.cat > -0.75] <- 1
+  sph.equ.cat[sph.equ.cat <= -0.75] <- 2
+
+  sph.equ.cat <- factor(sph.equ.cat, 
+                        levels = c(1, 2),
+                        labels = c(">-0.75D", "<=-0.75D"))
+  return(sph.equ.cat)
+}
+
+
+CategorizeMyopia <- function(sph.equ) {
+  # Dichotomizes moypia
+  #
+  # Args:
+  #   sph.equ: spherical equivalent in D 
+  #
+  # Returns: 
+  #    factor variable, categorized refraction 
+
+  sph.equ.cat <- sph.equ
+  sph.equ.cat[sph.equ.cat >  -0.75] <- 1
+  sph.equ.cat[sph.equ.cat <= -0.75 & sph.equ.cat > -3.00] <- 2  
+  sph.equ.cat[sph.equ.cat <= -3.00 & sph.equ.cat > -6.00] <- 3
+  sph.equ.cat[sph.equ.cat <= -6.00] <- 4 
+
+  sph.equ.cat <- factor(sph.equ.cat, 
+                        levels = c(1, 2, 3, 4),
+                        labels = c(">-0.75D", "-0.75/-3D", "-3/-6D", "<=-6"))
+  return(sph.equ.cat)
+}
+
+
+# TODO(SN): STILL USED?
+
+CategorizeAsti <- function(cylinder, axis) {
+  # categorize astigmatism 
+  #
+  # Args:
+  #   cylinder: strength of cylinder
+  #   axis: axis of astigmatism
+  #
+  # Returns: 
+  #    factor variable, categorized direction of astigmatism (<-0.5D)
+
+  # cave: NHANES uses positive cylinder notation
+
+  asti.cat <- NA
+  
+  if(cylinder<=0.5 & !is.na(cylinder) & !is.na(axis)) {
+    asti.cat <- 0 # none 
+  }
+    
+  
+  if(cylinder>0.5 & !is.na(cylinder) & !is.na(axis) & 
+     (axis<=15 | axis>=165)) {
+    asti.cat <- 1 
+     # WTR, positive cylinder 0-15; 165-180 degree
+  }
+  
+  if(cylinder>0.5 & !is.na(cylinder) & !is.na(axis) & 
+     (axis>=75 & axis<=105)) {
+    asti.cat <- 2 
+     # ATR, positive cylinder 075-105 degree 
+  }
+  
+    if(cylinder>=0.5 & !is.na(cylinder) & !is.na(axis) & 
+      ((axis>15 & axis<75) | (axis>105 & axis<165))) {
+      asti.cat <- 3
+     # OBL, all other orientations
+    }
+  
+  asti.cat <- factor(asti.cat,
+                        levels = c(0, 1, 2, 3),
+                        labels = c("none", "WTR", "ATR", "OBL"))
+  return(asti.cat)
+}
+
+
+CategorizeAsti <- Vectorize(CategorizeAsti)
+
+
+
+# ### test asti function
+# 
+# # none:
+# CategorizeAsti(cylinder=-5, axis=179)
+# 
+# # WTR
+# CategorizeAsti(cylinder=2, axis=10)
+# CategorizeAsti(cylinder=2, axis=170)
+# 
+# # ATR
+# CategorizeAsti(cylinder=2, axis=100)
+# 
+# # OBL
+# CategorizeAsti(cylinder=5, axis=60)
+# CategorizeAsti(cylinder=5, axis=120)
+
+DichotomizeAsti <- function(cylinder) {
+  # Dichotomizes Astigmatism (>0.5 D)
+  #
+  # Args:
+  #   Cylinder: lense power of cylinder (positive notation)  
+  #
+  # Returns: 
+  #    factor variable, dichotomized astigmatism 
+
+  asti.cat <- NA
+  asti.cat[cylinder <= 0.5] <- 1
+  asti.cat[cylinder >  0.5] <- 2
+
+  asti.cat <- factor(asti.cat, 
+                        levels = c(1, 2),
+                        labels = c("<=0.5D", ">0.5D"))
+  return(asti.cat)
+}
+
+
+
+```
+
+
+
+
+### Demographics
+
+
+#### RIAGENDR sex
+
+RIAGENDR - Gender: 1	Male	2	Female
+
+```{r recode sex, error=TRUE}
+
+table(nhanesdata$RIAGENDR, useNA = "ifany")
+
+nhanesdata$RIAGENDR <- factor(nhanesdata$RIAGENDR, 
+                              levels = c(1, 2),
+                              labels = c("male", "female"),
+                              ordered = FALSE)
+
+table(nhanesdata$RIAGENDR, useNA = "ifany")
+  
+```
+
+
+#### survey cycle (year)
+
+
+```{r recode year to factor, error=TRUE}
+table(nhanesdata$year, useNA = "ifany")
+nhanesdata$year <- as.factor(nhanesdata$year)
+
+table(nhanesdata$year, useNA = "ifany")
+str(nhanesdata$year)
+  
+```
+
+
+#### Age in years
+
+RIDAGEEX - Exam Age in months
+
+```{r recode age, error=TRUE}
+ nhanesdata$age <- nhanesdata$RIDAGEEX/12
+
+```
+
+
+
+#### RIDRETH1 ethnicity
+
+```{r recode ethnicity, error=TRUE}
+table(nhanesdata$RIDRETH1, useNA = "ifany")
+
+nhanesdata$RIDRETH1 <- factor(nhanesdata$RIDRETH1, 
+                              levels  = c(1,2,3,4,5),
+                              labels = c("MexAm", "othHis", "nonHisWhite", 
+                                         "nonHisBlack", "other"),
+                              ordered = FALSE)
+
+table(nhanesdata$RIDRETH1, useNA = "ifany")  
+
+```
+
+
+
+#### DMDBORN - Country of Birth
+
+```{r recode DMDBORN, error=TRUE}
+table(nhanesdata$DMDBORN, useNA = "ifany")
+ 
+```
+
+#### DMDEDUC2 education
+
+```{r recode education, error=TRUE}
+summary(nhanesdata$DMDEDUC2, useNA = "ifany")
+
+nhanesdata$DMDEDUC2 <- RecodeMiss(nhanesdata$DMDEDUC2, "7")
+nhanesdata$DMDEDUC2 <- RecodeMiss(nhanesdata$DMDEDUC2, "9")
+
+table(nhanesdata$DMDEDUC2, useNA = "ifany")
+
+
+nhanesdata$DMDEDUC2 <- factor(nhanesdata$DMDEDUC2, 
+                              levels  = c(1,2,3,4,5),
+                              labels = c("9", "11", "GED", "AA", "COL"),
+                              ordered = FALSE)
+
+table(nhanesdata$DMDEDUC2, useNA = "ifany")
+str(nhanesdata$DMDEDUC2, useNA = "ifany")
+
+```
+
+
+
+#### INDFMPIR 
+
+```{r recode INDFMPIR, error=TRUE}
+# ok
+```
+
+#### Sample weight
+
+
+Johnson CL, Paulose-Ram R, Ogden CL, et al. National Health and Nutrition Examination Survey: Analytic guidelines, 1999–2010. National Center for Health Statistics. Vital Health Stat 2(161). 2013. ISBN 0–8406-0662–1
+
+Table E. Formulas for constructing weights: National Health and Nutrition Examination Survey, 1999–2010
+
+If sddsrvyr in (1,2), then MEC10YR = 2/5 * WTMEC4YR; /* for 1999–2002 */ 
+If sddsrvyr in (3,4,5), then MEC10YR = 1/5 * WTMEC2YR; /* for 2003–2008 */
+
+SDDSRVYR is the survey cycle variable: 1 = 1999–2000, 2 = 2001–2002, 3 = 2003–2004, 4 = 2005–2006, 5 = 2007–2008,
+
+
+
+```{r NHANES sample weights and design, error=TRUE}
+nhanesdata$MEC10YR <- NA
+  
+  nhanesdata$MEC10YR[which (nhanesdata$year=="1999")] <- 2/5 * nhanesdata$WTMEC4YR[which (nhanesdata$year=="1999")]
+  
+  nhanesdata$MEC10YR[(nhanesdata$year=="2001")] <- 2/5 * nhanesdata$WTMEC4YR[which (nhanesdata$year=="2001")]
+  
+  nhanesdata$MEC10YR[(nhanesdata$year=="2003")] <- 1/5 * nhanesdata$WTMEC2YR[which (nhanesdata$year=="2003")]
+  
+  nhanesdata$MEC10YR[(nhanesdata$year=="2005")] <- 1/5 * nhanesdata$WTMEC2YR[which (nhanesdata$year=="2005")]
+  
+  nhanesdata$MEC10YR[(nhanesdata$year=="2007")] <- 1/5 * nhanesdata$WTMEC2YR[which (nhanesdata$year=="2007")]
+
+```
+
+
+
+### Vision exam
+
+#### VIXORSM - OR right sphere, average
+
+```{r recode sphere, error=TRUE}
+summary(nhanesdata$VIXORSM, useNA = "ifany")
+nhanesdata$VIXORSM <- RecodeMiss(nhanesdata$VIXORSM, "88")
+summary(nhanesdata$VIXORSM, useNA = "ifany")
+```
+
+#### VIXORCM - OR right cylinder, average
+
+```{r recode cylinder, error=TRUE}
+summary(nhanesdata$VIXORCM, useNA = "ifany")
+nhanesdata$VIXORCM <- RecodeMiss(nhanesdata$VIXORCM, "88")
+summary(nhanesdata$VIXORCM, useNA = "ifany")
+```
+
+
+#### VIXORAM - OR right axis, average
+
+```{r recode axis, error=TRUE}
+summary(nhanesdata$VIXORAM, useNA = "ifany")
+nhanesdata$VIXORAM <- RecodeMiss(nhanesdata$VIXORAM, "888")
+summary(nhanesdata$VIXORAM, useNA = "ifany")
+```
+
+#### VIDRVA - Right visual acuity, presenting
+
+```{r recode visual acuity, error=TRUE}
+summary(nhanesdata$VIDRVA, useNA = "ifany")
+nhanesdata$VIDRVA <- RecodeVisualacuity(nhanesdata$VIDRVA)
+summary(nhanesdata$VIDRVA, useNA = "ifany")
+```
+
+#### VIQ150 - Glasses/contact lenses for near work?
+
+```{r recode near glasses, error=TRUE}
+table(nhanesdata$VIQ150, useNA = "ifany")
+nhanesdata$VIQ150 <- RecodeMiss(nhanesdata$VIQ150, "9")
+table(nhanesdata$VIQ150, useNA = "ifany")
+
+nhanesdata$VIQ150 <- factor(nhanesdata$VIQ150, 
+                            levels = c(1, 2),
+                            labels = c("NearGlasses", "noNearGlasses"),
+                            ordered = FALSE)
+
+# Make noGlasses first, better for descriptives
+nhanesdata$VIQ150 <- relevel(nhanesdata$VIQ150, "noNearGlasses")
+
+table(nhanesdata$VIQ150, useNA = "ifany")
+```
+
+
+#### VIQ220 - Glasses/contact lenses worn for distance
+
+```{r recode distance glasses, error=TRUE}
+table(nhanesdata$VIQ220, useNA = "ifany")
+nhanesdata$VIQ220 <- RecodeMiss(nhanesdata$VIQ220, "9")
+table(nhanesdata$VIQ220, useNA = "ifany")
+
+nhanesdata$VIQ220 <- factor(nhanesdata$VIQ220, 
+                            levels = c(1, 2),
+                            labels = c("DistanceGlasses", "noDistanceGlasses"),
+                            ordered = FALSE)
+# Make noGlasses first, better for descriptives
+nhanesdata$VIQ220 <- relevel(nhanesdata$VIQ220, "noDistanceGlasses")
+
+table(nhanesdata$VIQ220, useNA = "ifany")
+```
+
+
+#### VIXKRDM - Right keratometry power, average (D) 
+
+```{r recode k power, error=TRUE}
+summary(nhanesdata$VIXKRDM, useNA = "ifany")
+nhanesdata$VIXKRDM <- RecodeMiss(nhanesdata$VIXKRDM, "88")
+summary(nhanesdata$VIXKRDM, useNA = "ifany")
+```
+
+#### VIXKRCD - Right keratometry cylinder 
+
+```{r recode k cylinder, error=TRUE}
+summary(nhanesdata$VIXKRCD, useNA = "ifany")
+nhanesdata$VIXKRCD <- RecodeMiss(nhanesdata$VIXKRCD, "88")
+summary(nhanesdata$VIXKRCD, useNA = "ifany")
+```
+
+#### VIXKRCG - Right keratometry axis (deg)
+
+```{r recode k axis, error=TRUE}
+summary(nhanesdata$VIXKRCG, useNA = "ifany")
+nhanesdata$VIXKRCG <- RecodeMiss(nhanesdata$VIXKRCG, "888")
+summary(nhanesdata$VIXKRCG, useNA = "ifany")
+```
+
+#### VIQ180 - Eye surgery for near sightedness?
+
+```{r recode eye surgery, error=TRUE}
+table(nhanesdata$VIQ180, useNA = "ifany")
+nhanesdata$VIQ180 <- RecodeMiss(nhanesdata$VIQ180, "9")
+table(nhanesdata$VIQ180, useNA = "ifany")
+```
+
+#### VIQ200 - Eye surgery for cataract?
+
+```{r recode cat surgery, error=TRUE}
+table(nhanesdata$VIQ200, useNA = "ifany")
+nhanesdata$VIQ200 <- RecodeMiss(nhanesdata$VIQ200, "9")
+table(nhanesdata$VIQ200, useNA = "ifany")
+```
+
+
+#### calculate SE
+
+Spherical Equivalent (spherical correction value plus half the cylindrical power)
+
+```{r calculate SE, error=TRUE}
+
+  nhanesdata$SER <-
+  as.numeric(nhanesdata$VIXORSM + nhanesdata$VIXORCM / 2)
+  nhanesdata$SEL <-
+  as.numeric(nhanesdata$VIXOLSM + nhanesdata$VIXOLCM / 2)
+
+```
+
+
+#### categorize refraction
+
+```{r calculate refraction categories, error=TRUE}
+
+  nhanesdata$SER.dicho <- DichotomizeMyopia(nhanesdata$SER)
+  nhanesdata$SEL.dicho <- DichotomizeMyopia(nhanesdata$SEL)
+  
+  nhanesdata$SER.cat <- CategorizeMyopia(nhanesdata$SER)
+  nhanesdata$SEL.cat <- CategorizeMyopia(nhanesdata$SEL)  
+  
+```
+
+
+#### Categorize astigmatism
+
+```{r calculate power vectors, error=TRUE}
+
+nhanesdata$asti.ref  <- CategorizeAsti(nhanesdata$VIXORCM, nhanesdata$VIXORAM)
+nhanesdata$asti.kera <- CategorizeAsti(nhanesdata$VIXKRCD, nhanesdata$VIXKRCG)
+
+table(nhanesdata$asti.ref, useNA = "ifany")
+table(nhanesdata$asti.kera, useNA = "ifany")
+
+nhanesdata$asti.ref.cat  <- DichotomizeAsti(nhanesdata$VIXORCM)
+nhanesdata$asti.kera.cat <- DichotomizeAsti(nhanesdata$VIXKRCD)
+
+table(nhanesdata$asti.ref.cat, useNA = "ifany")
+table(nhanesdata$asti.kera.cat, useNA = "ifany")
+
+```
+
+
+#### power vectors
+
+```{r power vectors, error=TRUE}
+## power vectors (CAVE: R expects angles in radians, not degrees)
+  
+  # refractive astigmatism power vectors
+  nhanesdata$J0.ref.OD <-
+  (-nhanesdata$VIXORCM / 2) * cos (2 * deg2rad(nhanesdata$VIXORAM))
+  
+  nhanesdata$J45.ref.OD <-
+  (-nhanesdata$VIXORCM / 2) * sin (2 * deg2rad(nhanesdata$VIXORAM))
+  
+  nhanesdata$J0.ref.OS <-
+  (-nhanesdata$VIXOLCM / 2) * cos (2 * deg2rad(nhanesdata$VIXOLAM))
+  
+  nhanesdata$J45.ref.OS <-
+  (-nhanesdata$VIXOLCM / 2) * sin (2 * deg2rad(nhanesdata$VIXOLAM))
+  
+  
+  # keratometry astigmatism power vectors
+  nhanesdata$J0.kera.OD <-
+  (-nhanesdata$VIXKRCD / 2) * cos (2 * deg2rad(nhanesdata$VIXKRCG))
+  
+  nhanesdata$J45.kera.OD <-
+  (-nhanesdata$VIXKRCD / 2) * sin (2 * deg2rad(nhanesdata$VIXKRCG))
+  
+  nhanesdata$J0.kera.OS <-
+  (-nhanesdata$VIXKLCD / 2) * cos (2 * deg2rad(nhanesdata$VIXKLCG))
+  
+  nhanesdata$J45.kera.OS <-
+  (-nhanesdata$VIXKLCD / 2) * sin (2 * deg2rad(nhanesdata$VIXKLCG))
+```
+
+
+## Restrict to analysis sample
+
+restrict to sex, age, SE OD, and DMDEDUC2 (+20 years) available 
+
+```{r restrict data, error=TRUE}
+sum(is.na(nhanesdata$SDMVPSU))
+nrow(nhanesdata)
+
+nhanesdata <- nhanesdata[!is.na(nhanesdata$RIAGENDR) &
+                                 !is.na(nhanesdata$age) &
+                                 !is.na(nhanesdata$SER) &
+                                  !is.na(nhanesdata$DMDEDUC2), ]
+
+nrow(nhanesdata)
+
+```
+
+
+## Exclusions
+
+### Corneal power VIXKRCD
+
+exclusion of negative values and extreme values > 10 D
+
+```{r exclusion VIXKRCD, error=TRUE}
+sum(is.na(nhanesdata$SDMVPSU))
+message(paste("n VIXKRCD<0 (OD):", nrow(nhanesdata[which(nhanesdata$VIXKRCD<0), ])))
+message(paste("n VIXKLCD<0 (OS):", nrow(nhanesdata[which(nhanesdata$VIXKLCD<0), ])))
+
+nhanesdata$VIXKRCD[nhanesdata$VIXKRCD<0] <- NA
+nhanesdata$VIXKLCD[nhanesdata$VIXKLCD<0] <- NA
+
+message(paste("n VIXKRCD>10 (OD):", nrow(nhanesdata[which(nhanesdata$VIXKRCD>10), ])))
+message(paste("n VIXKLCD>10 (OS):", nrow(nhanesdata[which(nhanesdata$VIXKLCD>10), ])))
+
+nhanesdata$VIXKRCD[nhanesdata$VIXKRCD>10] <- NA
+nhanesdata$VIXKLCD[nhanesdata$VIXKLCD>10] <- NA
+
+sum(is.na(nhanesdata$SDMVPSU))
+```
+
+### refractive surgery 
+
+VIC180 = 1	Yes
+
+TODO(SN): still needed?
+```{r workaround, error=TRUE}
+
+nhanesdata.test <- nhanesdata
+
+# nhanesdata.test[] <- lapply(nhanesdata.test, unclass)
+
+```
+
+
+
+```{r exclusion VIQ180, error=TRUE}
+
+table(nhanesdata$VIQ180, useNA = "ifany")
+
+message(paste("n refractive surgery:", nrow(nhanesdata[which(nhanesdata$VIQ180==1), ])))
+
+### compare excluded
+
+nhanesdata$refsurg <- 0
+nhanesdata$refsurg[(nhanesdata$VIQ180==1) | is.na(nhanesdata$VIQ180)] <- 1
+table(nhanesdata$refsurg, useNA = "ifany")
+
+listVars <- c("RIAGENDR", "age", "INDFMPIR", "RIDRETH1",
+              "DMDEDUC2",
+              "SER",    
+              "SER.dicho",
+              "SER.cat",
+              "VIDRVA",
+              "VIQ220", 
+              "refsurg")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "VIQ220", "DMDEDUC2", "RIAGENDR", 
+             "SER.dicho", "SER.cat", 
+             "refsurg")
+
+# unweighted, split by refractive surgery (or missing info)
+table.refsurg <- CreateTableOne(vars = listVars, 
+                                data = nhanesdata, 
+                                factorVars = catVars, 
+                                strata = "refsurg", 
+                                test = FALSE)
+
+print(table.refsurg, quote = FALSE)
+
+
+nrow(nhanesdata[nhanesdata$refsurg==1, ])
+table.refsurg.edu <- CreateTableOne(vars = listVars, 
+                                data = nhanesdata[nhanesdata$refsurg==1, ], 
+                                factorVars = catVars, 
+                                strata = "DMDEDUC2", 
+                                test = FALSE)
+
+print(table.refsurg.edu, quote = FALSE)
+
+
+nhanesdata <- nhanesdata[!(nhanesdata$VIQ180==1) &
+                           !is.na(nhanesdata$VIQ180), ]
+
+nrow(nhanesdata)
+
+sum(is.na(nhanesdata$VIQ180))
+```
+
+
+### cataract surgery 
+
+VIC220 = 1	Yes
+
+
+```{r exclusion VIQ200, error=TRUE}
+
+sum(is.na(nhanesdata$VIQ200))
+
+nrow(nhanesdata)
+table(nhanesdata$VIQ200, useNA = "ifany")
+
+message(paste("n cataract surgery:", nrow(nhanesdata[which(nhanesdata$VIQ200==1), ])))
+
+
+
+### compare excluded
+
+nhanesdata$catsurg <- 0
+nhanesdata$catsurg[(nhanesdata$VIQ200==1) | is.na(nhanesdata$VIQ200)] <- 1
+table(nhanesdata$catsurg, useNA = "ifany")
+
+
+nhanesdata <- nhanesdata[!(nhanesdata$VIQ200==1) & !is.na(nhanesdata$VIQ200), ]
+
+nrow(nhanesdata)
+
+sum(is.na(nhanesdata$VIQ200))
+
+```
+
+
+#### sensitivity analyses
+
+* restrict to >30
+* split by ethnicity
+* restrict to born in the USA
+
+```{r restrict sensitivity, error=TRUE}
+nrow(nhanesdata)
+
+nhanesdata.old <- nhanesdata[nhanesdata$age > 30, ]
+nrow(nhanesdata.old)
+
+
+nhanesdata.MexAm <- nhanesdata[nhanesdata$RIDRETH1 == "MexAm", ]
+nhanesdata.othHis <- nhanesdata[nhanesdata$RIDRETH1 == "othHis", ]
+nhanesdata.nonHisWhite <- nhanesdata[nhanesdata$RIDRETH1 == "nonHisWhite", ]
+nhanesdata.nonHisBlack <- nhanesdata[nhanesdata$RIDRETH1 == "nonHisBlack", ]
+nhanesdata.other <- nhanesdata[nhanesdata$RIDRETH1 == "other", ]
+
+nhanesdata.US <- nhanesdata[nhanesdata$DMDBORN == "1", ]
+
+nhanesdata.US.MexAm <- nhanesdata.US[nhanesdata.US$RIDRETH1 == "MexAm", ]
+nhanesdata.US.othHis <- nhanesdata.US[nhanesdata.US$RIDRETH1 == "othHis", ]
+nhanesdata.US.nonHisWhite <- nhanesdata.US[nhanesdata.US$RIDRETH1 == "nonHisWhite", ]
+nhanesdata.US.nonHisBlack <- nhanesdata.US[nhanesdata.US$RIDRETH1 == "nonHisBlack", ]
+nhanesdata.US.other <- nhanesdata.US[nhanesdata.US$RIDRETH1 == "other", ]
+
+```
+
+## survey design object
+
+* stratum (SDMVSTRA) - for variance estimation
+* PSU (SDMVPSU) - for variance estimation
+
+http://r-survey.r-forge.r-project.org/survey/example-twostage.html
+
+http://stats.idre.ucla.edu/r/faq/how-can-i-do-regression-estimation-with-survey-data/
+
+https://github.com/ajdamico/asdfree/blob/master/National%20Health%20and%20Nutrition%20Examination%20Survey/2009-2010%20interview%20plus%20laboratory%20-%20download%20and%20analyze.R
+
+
+
+```{r survey object, error=TRUE}
+
+sum(is.na(nhanesdata$SDMVPSU))
+
+# https://github.com/ajdamico/asdfree/
+
+nhanes.design <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata
+	)
+
+nhanes.old.design <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.old
+	)
+
+
+nhanesdesign.MexAm <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.MexAm
+	)
+
+
+
+nhanesdesign.othHis <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.othHis
+	)
+
+
+
+nhanesdesign.nonHisWhite <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.nonHisWhite
+	)
+
+
+nhanesdesign.nonHisBlack <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.nonHisBlack
+	)
+
+
+nhanesdesign.other <- 
+	svydesign(
+		id = ~SDMVPSU , 
+		strata = ~SDMVSTRA ,
+		nest = TRUE ,
+		weights = ~MEC10YR ,
+		data = nhanesdata.other
+	)
+
+
+
+```
+
+
+
+# Descriptives
+
+
+## Age 
+
+```{r age distri old, error=TRUE}
+summary(nhanesdata$age)
+
+table(nhanesdata$age.dec, useNA = "ifany")
+
+ggplot(nhanesdata, aes(x=year, y=age)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$age, groups = nhanesdata$year)
+
+ggplot(nhanesdata, aes(x=age)) + 
+  geom_histogram()
+
+```
+
+
+## Income/ povertry 
+
+INDFMPIR: This variable is an index for the ratio of family income to poverty. The Department of Health and Human Services’ (HHS) poverty guidelines were used as the poverty measure to calculate this index. These guidelines are issued each year, in the Federal Register, for determining financial eligibility for certain federal programs such as Head Start, Supplemental Nutrition Assistance Program (SNAP) (formerly Food Stamp Program), Special Supplemental Nutrition Program for Women, Infants, and Children (WIC), and the National School Lunch Program.
+
+The variable INDFMPIR was calculated by dividing family income by the poverty guidelines, specific to family size, as well as the appropriate year and state. The values were not computed if the income screener information (INQ 220: < $20,000 or >= $20,000) was the only family income information reported. If family income was reported as a range value, the midpoint of the range was used to compute the variable. Values at or above 5.00 were coded as 5.00 or more because of disclosure concerns. The values were not computed if the family income data was missing.
+
+(https://wwwn.cdc.gov/Nchs/Nhanes/1999-2000/DEMO.htm#Analytic_Notes)
+
+
+The best income variable to use when comparing data over time is INDFMPIR, which is an index for the ratio of family income to poverty. The U.S. Department of Health and Human Services’ poverty guidelines (http:// aspe.hhs.gov/poverty/13poverty.cfm) were used to calculate this index. 
+
+
+The family income-to-poverty ratio (FIPR) can be categorized as follows:
+* 0.00–0.99 = Below poverty; 1.00 and above = At or above poverty.
+* Based on SNAP eligibility: 0.00–1.30, >1.30–3.50, and >3.50 and above.
+* Based on WIC eligibility: 0.00–1.85, >1.85–3.50, and >3.50 and above.
+
+Supplemental Nutrition Assistance Program (SNAP) (formerly the Food Stamp Program)
+
+Special Supplemental Nutrition Program for Women, Infants, and Children (WIC)
+
+(Johnson CL, Paulose-Ram R, Ogden CL, et al. National Health and Nutrition Examination Survey: Analytic guidelines, 1999–2010. National Center for Health Statistics. Vital Health Stat 2(161). 2013.)
+
+
+```{r INDFMPIR distri old, error=TRUE}
+summary(nhanesdata$INDFMPIR)
+
+ggplot(nhanesdata, aes(x=year, y=INDFMPIR)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$INDFMPIR, groups = nhanesdata$year)
+
+
+ggplot(nhanesdata, aes(x=INDFMPIR)) + 
+  geom_histogram()
+
+```
+
+## Sph
+
+```{r desc ref sph old, error=TRUE}
+
+summary(nhanesdata$VIXORSM)
+summary(nhanesdata$VIXOLSM)
+
+# * VIXORSM - OR right sphere, average
+ggplot(nhanesdata, aes(x=year, y=VIXORSM)) +
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXORSM, groups = nhanesdata$year)
+
+# ggplot(nhanesdata, aes(x=year, y=VIXOLSM)) +
+#   geom_boxplot()
+
+```
+
+
+## Cyl
+
+```{r desc ref cy old, error=TRUE}
+
+summary(nhanesdata$VIXORCM)
+summary(nhanesdata$VIXOLCM)
+
+ggplot(nhanesdata, aes(x=year, y=VIXORCM)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXORCM, groups = nhanesdata$year)
+
+# ggplot(nhanesdata, aes(x=year, y=VIXOLCM)) +
+#   geom_boxplot()
+
+```
+
+
+## Spherical equivalent
+
+```{r desc ref SE old, error=TRUE}
+
+summary(nhanesdata$SER)
+summary(nhanesdata$SEL)
+
+ggplot(nhanesdata, aes(x=year, y=SER)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$SER, groups = nhanesdata$year)
+
+# ggplot(nhanesdata, aes(x=year, y=SEL)) +
+#   geom_boxplot()
+
+
+ggplot(nhanesdata, aes(x=SER)) + 
+  geom_histogram()
+
+# ggplot(nhanesdata, aes(x=SEL)) + 
+#   geom_histogram()
+
+```
+
+### SE dichotomized
+
+
+```{r SE dicho distri old, error=TRUE}
+table(nhanesdata$SER.dicho, useNA = "ifany")
+
+ggplot(nhanesdata, aes(x=SER.dicho)) + 
+  stat_count()
+
+```
+
+### SE categorized
+
+
+
+
+
+```{r SE cat distri old, error=TRUE}
+table(nhanesdata$SER.cat, useNA = "ifany")
+
+# color-blind-friendly palette with grey:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+barplot <- ggplot(nhanesdata, aes(x=SER.cat)) + 
+  stat_count()
+
+barplot <- ggplot(nhanesdata, aes(x=SER.cat)) + 
+  geom_bar()
+
+# Divide by levels, in the horizontal direction
+barplot + facet_grid(. ~ DMDEDUC2)
+
+
+# https://stackoverflow.com/questions/24776200/ggplot-replace-count-with-percentage-in-geom-bar
+
+
+
+```
+
+### Asti ref
+```{r desc asti ref, error=TRUE}
+summary(nhanesdata$asti.ref)
+
+```
+
+
+
+
+## Keratometric power
+
+* VIXKRDM - Right keratometry power, average (D) 
+* VIXKLDM - Left keratometry power, average (D) 
+
+
+```{r desc kera power old, error=TRUE}
+summary(nhanesdata$VIXKRDM)
+summary(nhanesdata$VIXKLDM)
+
+# * VIXKRDM - Right keratometry power, average (D) 
+ggplot(nhanesdata, aes(x=year, y=VIXKRDM)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXKRDM, groups = nhanesdata$year)
+
+
+# # * VIXKLDM - Left keratometry power, average (D)
+# ggplot(nhanesdata, aes(x=year, y=VIXKLDM)) +
+#   geom_boxplot()
+```
+
+
+## Kera cylinder
+
+
+* VIXKRCD - Right keratometry cylinder  
+* VIXKLCD - Left keratometry cylinder  
+
+
+```{r plot bw keracyl, error=TRUE}
+summary(nhanesdata$VIXKRCD)
+# summary(nhanesdata$VIXKLCD)
+
+ggplot(nhanesdata, aes(x = year, y = VIXKRCD)) +
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXKRCD, groups = nhanesdata$year)
+
+
+# ggplot(nhanesdata, aes(x = year, y = VIXKLCD)) +
+#   geom_boxplot()
+
+```
+
+### Asti kera
+```{r desc asti kera, error=TRUE}
+summary(nhanesdata$asti.kera)
+
+```
+
+
+## Education
+
+DMDEDUC2: Education Level - Adults 20+
+
+What is the highest grade or level of school {you have/SP has} completed or the highest degree {you have/s/he has} received?
+
+
+*1	Less Than 9th Grade
+*2	9-11th Grade (Includes 12th grade with no diploma)	
+*3	High School Grad/GED or Equivalent
+*4	Some College or AA degree	
+*5	College Graduate or above
+*7	Refused (set to NA)
+*9	Don't Know (set to NA)
+*.	Missing (set to NA)
+
+
+Educational attainment: Five educational attainment variables are included the Demographics File. Three of the education variables target survey participants. Two other education variables provide information about the educational attainment of the household reference person (DMDHREDU) and the household reference person’s spouse (DMDHSEDU), when applicable. A brief description of survey participant educational attainment variables follows.
+
+DMDEDUC is a 3-category variable that groups survey participants 6 years of age and over into one of three educational attainment groups: 1) less than high school education attainment, 2) high school graduate (has a high school diploma or high school equivalency diploma such as a General Educational Development/GED), or 3) has more than a high school education.
+
+In addition to DMDEDUC, the Demographics File contains 2 variables that provide additional information on the educational attainment level of survey participants. Educational attainment information for persons 6 through 19 years of age is included in DMDEDUC3. Detailed educational attainment information for adults who are 20 years of age and over is reported in DMDEDUC2.
+
+Questionnaire section files, MEC examination files, and laboratory files can be linked to sample person demographics variables using the unique survey participant identifier SEQN. RIDSTATR provides the MEC examination status of a sample person.
+
+(https://wwwn.cdc.gov/Nchs/Nhanes/1999-2000/DEMO.htm#Analytic_Notes)
+
+
+```{r DMDEDUC2 distri old, error=TRUE}
+# summary(nhanesdat$DMDEDUC2)
+
+table(nhanesdata$DMDEDUC2, useNA = "ifany")
+
+ggplot(nhanesdata, aes(x=DMDEDUC2)) + 
+  geom_histogram()
+
+# TODO change tickmarks
+
+
+```
+
+
+## Vitamin D
+
+```{r desc VITD, error=TRUE}
+
+summary(nhanesdata$VITD)
+
+ggplot(nhanesdata, aes(x=year, y=VITD)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VITD, groups = nhanesdata$year)
+
+ggplot(nhanesdata, aes(x=VITD)) + 
+  geom_histogram()
+
+```
+
+
+## Table 1a
+
+
+```{r table 1a, error=TRUE}
+
+nrow(nhanesdata)
+
+# Create a variable list 
+listVars <- c("age", "RIAGENDR", "INDFMPIR", "RIDRETH1",
+              "VIXORSM", 
+              "VIXORCM",
+              "SER",
+              "SER.dicho",
+              "SER.cat",
+              "asti.ref",
+              "asti.ref.cat",
+              "J0.ref.OD",
+              "J45.ref.OD",
+              "VIXKRDM",
+              "VIXKRCD",
+              "asti.kera",
+              "asti.kera.cat",
+              "J0.kera.OD",
+              "J45.kera.OD",
+              "VIDRVA",
+              "VIQ220",
+              "DMDEDUC2",
+              "VITD")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "VIQ220", "DMDEDUC2", "RIAGENDR", 
+             "SER.dicho", "SER.cat", 
+             "asti.ref", "asti.ref.cat", "asti.kera", "asti.kera.cat")
+
+# unweighted, split by sex
+table.1 <- CreateTableOne(vars = listVars, data = nhanesdata, factorVars = catVars, test = FALSE)
+
+print(table.1, quote = TRUE)
+
+
+```
+
+## Table 1b
+
+```{r table 1b, error=TRUE}
+
+nrow(nhanesdata)
+
+# Create a variable list 
+listVars <- c("age", "INDFMPIR", "RIDRETH1",
+              "VIXORSM", 
+              "VIXORCM",
+              "SER",    
+              "SER.dicho",
+              "SER.cat",
+              "VIXORAM", 
+              "asti.ref",
+              "asti.ref.cat",
+              "J0.ref.OD",
+              "J45.ref.OD",
+              "VIXKRDM",
+              "VIXKRCD",
+              "asti.kera",
+              "asti.kera.cat",
+              "J0.kera.OD",
+              "J45.kera.OD",
+              "VIDRVA",
+              "VIQ220",
+              "DMDEDUC2",
+              "VITD")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "VIQ220", "DMDEDUC2", "RIAGENDR", 
+             "SER.dicho", "SER.cat", 
+             "asti.ref", "asti.ref.cat", "asti.kera", "asti.kera.cat")
+
+# unweighted, split by sex
+table.1 <- CreateTableOne(vars = listVars, data = nhanesdata, factorVars = catVars, strata = "RIAGENDR", test = FALSE)
+
+print(table.1, quote = TRUE)
+
+
+```
+
+
+## Table 1c
+
+```{r table 1c, error=TRUE}
+
+nrow(nhanesdata)
+
+# Create a variable list 
+
+listVars <- c("age", "RIAGENDR", "INDFMPIR", "RIDRETH1",
+              "VIXORSM", 
+              "VIXORCM",
+              "SER",   
+              "SER.dicho",
+              "SER.cat",
+              "VIXORAM", 
+              "asti.ref",
+              "asti.ref.cat",
+              "J0.ref.OD",
+              "J45.ref.OD",
+              "VIXKRDM",
+              "VIXKRCD",
+              "asti.kera",
+              "asti.kera.cat",
+              "J0.kera.OD",
+              "J45.kera.OD",
+              "VIDRVA",
+              "VIQ220",
+              "VITD")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "VIQ220", "DMDEDUC2", "RIAGENDR", 
+             "SER.dicho", "SER.cat", 
+             "asti.ref", "asti.ref.cat", "asti.kera", "asti.kera.cat")
+
+# unweighted, split by edu
+table.2 <- CreateTableOne(vars = listVars, data = nhanesdata, factorVars = catVars, strata = "DMDEDUC2", test = FALSE)
+
+print(table.2, quote = TRUE)
+
+```
+
+
+## Table S1
+
+stratified by ethnicity
+
+```{r table S1, error=TRUE}
+
+nrow(nhanesdata)
+
+# Create a variable list 
+listVars <- c("age", "RIAGENDR", "INDFMPIR",
+              "DMDEDUC2",
+              "VIXORSM", 
+              "VIXORCM",
+              "SER",    
+              "SER.dicho",
+              "SER.cat",
+              "VIXORAM", 
+              "asti.ref",
+              "asti.ref.cat",
+              "J0.ref.OD",
+              "J45.ref.OD",
+              "VIXKRDM",
+              "VIXKRCD",
+              "asti.kera",
+              "asti.kera.cat",
+              "J0.kera.OD",
+              "J45.kera.OD",
+              "VIDRVA",
+              "VIQ220", 
+              "VITD")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "VIQ220", "DMDEDUC2", "RIAGENDR", 
+             "SER.dicho", "SER.cat", 
+             "asti.ref", "asti.ref.cat", "asti.kera", "asti.kera.cat")
+
+# unweighted, split by sex
+table.1 <- CreateTableOne(vars = listVars, 
+                          data = nhanesdata, 
+                          factorVars = catVars, 
+                          strata = "RIDRETH1", 
+                          test = FALSE)
+
+print(table.1, quote = TRUE)
+
+
+```
+
+
+
+# Analysis
+
+
+## plots
+
+### Income/ povertry
+
+
+```{r INDFMPIR SER, error=TRUE}
+
+ggplot(nhanesdata, aes(x=INDFMPIR, y=SER)) +
+ geom_point()
+```
+
+```{r INDFMPIR edu box, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=INDFMPIR)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$INDFMPIR, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+```
+
+association of edu and income, but not of SE and income
+
+
+### Sph
+
+```{r Sph edu box, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIXORSM)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXORSM, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+# ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=SVIXOLSM)) + 
+#   geom_boxplot()
+
+
+```
+
+### Cyl
+
+```{r Cyl edu box old, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIXORCM)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXORCM, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+
+# ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIXOlCM)) + 
+#   geom_boxplot()
+
+
+```
+
+
+
+### SE
+
+```{r SE edu box old, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=SER)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$SER, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+# ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=SEL)) + 
+#   geom_boxplot()
+
+
+```
+
+
+### SE dichotomized
+
+#### education
+
+```{r SE dicho edu table, error=TRUE}
+
+# Create a variable list 
+
+listVars <- c("SER.dicho")
+
+# Define categorical variables
+catVars <- c("DMDEDUC2", "SER.dicho")
+
+# unweighted, split by edu
+table.2 <- CreateTableOne(vars = listVars, data = nhanesdata, factorVars = catVars, strata = "DMDEDUC2", test = TRUE)
+
+print(table.2)
+
+# add confidence intervals
+
+  prop.myo <- svyby(~SER.dicho, ~as.factor(DMDEDUC2), 
+                design=nhanes.design, svymean)
+  
+  str(prop.myo)
+  round((100*prop.myo[[3]]), 1)
+  round(100*confint(prop.myo), 1)
+  
+```
+
+#### ethnicity
+
+```{r SE dicho ethnicity table, error=TRUE}
+
+# Create a variable list 
+
+listVars <- c("SER.dicho")
+
+# Define categorical variables
+catVars <- c("RIDRETH1", "SER.dicho")
+
+# unweighted, split by edu
+table.2 <- CreateTableOne(vars = listVars, data = nhanesdata, factorVars = catVars, strata = "RIDRETH1", test = FALSE)
+
+print(table.2)
+
+# add confidence intervals
+
+  prop.myo <- svyby(~SER.dicho, ~as.factor(RIDRETH1), 
+                design=nhanes.design, svymean)
+  
+  str(prop.myo)
+  round((100*prop.myo[[3]]), 1)
+  round(100*confint(prop.myo), 1)
+  
+```
+
+### SE categorized
+
+
+### K
+
+```{r K edu box, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIXKRDM)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIXKRDM, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+
+# ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIXKLDM)) + 
+#   geom_boxplot()
+
+
+```
+
+
+
+
+### VA
+
+TODO(SN): barplot by 
+
+```{r VA edu box, error=TRUE}
+
+ggplot(nhanesdata, aes(x=as.factor(DMDEDUC2), y=VIDRVA)) + 
+  geom_boxplot()
+
+sinaplot(nhanesdata$VIDRVA, groups = as.factor(nhanesdata$DMDEDUC2))
+
+
+
+```
+
+
+
+## Models
+
+
+### SE continuous
+
+
+#### crude
+
+```{r SE crude surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### age, sex, year
+
+```{r SE2 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### a, s, y, K
+
+```{r SE3 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM, design = nhanes.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### a, s, y, K, ethnicity
+
+```{r SE4 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1 + VIXKRDM , design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### a, s, y, K, VITD
+
+```{r SE4a surveyglm, error=TRUE}
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1 + VIXKRDM + VITD, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### a, s, y, K, e, INDFMPIR
+
+```{r SE5 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + INDFMPIR, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+### Sensi SE continuous >30 years
+
+#### crude
+
+```{r SE crude surveyglm old sensi, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2), design = nhanes.old.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### age, sex, year
+
+```{r SE2 surveyglm old sensi, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.old.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### a, s, y, K
+
+```{r SE3 surveyglm old sensi, error=TRUE}
+
+reg.model <- svyglm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM, design = nhanes.old.design)
+
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+
+### Sensi: glm stratified by ethnicity
+
+svyglm stratified by ethnicity does not work: "Stratum (9) has only one PSU at stage 1", instead standard GLM
+
+#### overall
+
+```{r SE glm sensi overall, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM,
+                 data = nhanesdata)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### overall, adjusted for ethnicity
+
+```{r SE glm sensi overall 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1,
+                 data = nhanesdata)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### overall, adjusted for ethnicity + VITD
+
+```{r SE glm sensi overall 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + VITD,
+                 data = nhanesdata)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### overall, restricted to US-born, adjusted for ethnicity
+
+```{r SE glm sensi US-born  ethnicity, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1,
+                 data = nhanesdata.US)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### MexAm
+
+```{r SE glm sensi MexAm, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM,
+                 data = nhanesdata.MexAm)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+
+#### MexAm, VITD
+
+```{r SE glm sensi MexAm 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + VITD,
+                 data = nhanesdata.MexAm)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### MexAm US-born
+
+```{r SE glm sensi MexAm 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM,
+                 data = nhanesdata.US.MexAm)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+
+#### othHis
+
+```{r SE glm sensi othHis, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year  + VIXKRDM,
+                    data = nhanesdata.othHis)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### othHis VITD
+
+```{r SE glm sensi othHis 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year  + VIXKRDM,
+                    data = nhanesdata.othHis)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### othHis US-born
+
+```{r SE glm sensi othHis 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year  + VIXKRDM,
+                    data = nhanesdata.US.othHis)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisWhite
+
+```{r SE glm sensi nonHisWhite, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.nonHisWhite)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisWhite + VITD
+
+```{r SE glm sensi nonHisWhite 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.nonHisWhite)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisWhite US-born
+
+```{r SE glm sensi nonHisWhite 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.US.nonHisWhite)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisBlack
+
+```{r SE glm sensi nonHisBlack 1, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.nonHisBlack)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisBlack + VITD
+
+```{r SE glm sensi nonHisBlack 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM + VITD,
+                    data = nhanesdata.nonHisBlack)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### nonHisBlack US-born
+
+```{r SE glm sensi nonHisBlack 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.US.nonHisBlack)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### other
+
+```{r SE glm sensi other, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.other)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### other + VITD
+
+```{r SE glm sensi other 2, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM + VITD,
+                    data = nhanesdata.other)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+#### other + US-born
+
+```{r SE glm sensi other 3, error=TRUE}
+
+reg.model <- glm(formula = SER ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + 
+    VIXKRDM,
+                    data = nhanesdata.US.other)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+```
+
+### SE dichotomized
+
+
+#### crude
+
+```{r SE dicho crude surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2), design = nhanes.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+
+rm(reg.model)
+```
+
+#### age, sex, year
+
+```{r SE dicho 1 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year , design = nhanes.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+
+#### a, s, y, K
+
+```{r SE dicho 3 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM, design = nhanes.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+#### a, s, y, K, ethn
+
+```{r SE dicho 4 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1, design = nhanes.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+#### a, s, y, K, ethn, VITD
+
+```{r SE dicho 5 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + VITD, design = nhanes.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+#### a, s, y, K, ethn, PIR
+
+```{r SE dicho 6 surveyglm, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + INDFMPIR, design = nhanes.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+### SE dichotomized >30
+
+
+#### crude
+
+```{r SE dicho crude surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2), design = nhanes.old.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+
+rm(reg.model)
+```
+
+#### age, sex, year
+
+```{r SE dicho 1 surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year , design = nhanes.old.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+
+#### a, s, y, K
+
+```{r SE dicho 3 surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM, design = nhanes.old.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+#### a, s, y, K, ethn
+
+```{r SE dicho 4 surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1, design = nhanes.old.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+#### a, s, y, K, ethn, VITD
+
+```{r SE dicho 5 surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + VITD, design = nhanes.old.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+#### a, s, y, K, ethn, PIR
+
+```{r SE dicho 6 surveyglm old, error=TRUE}
+
+reg.model <- svyglm(formula = as.factor(SER.dicho) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + VIXKRDM + RIDRETH1 + INDFMPIR, design = nhanes.old.design, family=quasibinomial(logit))
+
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint((reg.model))), 2)
+rm(reg.model)
+```
+
+
+
+### Sensi: SE dichotomized, glm stratified by ethnicity (a, s, y, K)
+
+adjusted for age, sex, survey cycle, keratometric power 
+
+#### MexAm
+
+```{r SE dicho glm sensi MexAm, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.MexAm, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### MexAm US-born
+
+```{r SE dicho glm sensi MexAm 2, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.US.MexAm, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### othHis
+
+```{r SE dicho glm sensi othHis, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.othHis, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### othHis US-born
+
+```{r SE dicho glm sensi othHis 2, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.US.othHis, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+
+#### nonHisWhite
+
+```{r SE dicho glm sensi nonHisWhite, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.nonHisWhite, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### nonHisWhite US-born
+
+```{r SE dicho glm sensi nonHisWhite 2, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.US.nonHisWhite, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+
+#### nonHisBlack
+
+```{r SE dicho glm sensi nonHisBlack, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.nonHisBlack, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### nonHisBlack US-born
+
+```{r SE dicho glm sensi nonHisBlack 2, error=TRUE}
+reg.model <- glm(formula = SER.dicho ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.US.nonHisBlack, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### other
+
+```{r SE dicho glm sensi other, error=TRUE}
+reg.model <- glm(formula = as.factor(SER.dicho) ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.other, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+#### other US-born
+
+```{r SE dicho glm sensi other 2, error=TRUE}
+reg.model <- glm(formula = as.factor(SER.dicho) ~ DMDEDUC2 + RIAGENDR + age + year + VIXKRDM, 
+                 data = nhanesdata.US.other, 
+                 family = binomial(link = "logit"))
+
+summary(reg.model)
+nobs(reg.model)
+round(exp(coef(reg.model)), 2)
+round(exp(confint(reg.model)),2)
+rm(reg.model)
+```
+
+
+### Sph
+
+```{r surveyglm Sph, error=TRUE}
+reg.model <- svyglm(formula = VIXORSM ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round(confint(reg.model),2)
+
+rm(reg.model)
+
+```
+
+
+
+### Cyl
+
+```{r surveyglm Cyl, error=TRUE}
+reg.model <- svyglm(formula = VIXORCM ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1, design = nhanes.design)
+
+summary(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+### Ref Asti
+
+#### crude
+
+```{r surveyglm Ref asti crude, error=TRUE}
+reg.model <- svyglm(formula = as.factor(asti.ref.cat) ~ as.factor(DMDEDUC2), design = nhanes.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm Asti Ref, error=TRUE}
+reg.model <- svyglm(formula = asti.ref.cat ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+### J0
+
+#### crude
+
+```{r surveyglm J0.ref.OD crude, error=TRUE}
+reg.model <- svyglm(formula = J0.ref.OD ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J0.ref.OD a s y, error=TRUE}
+reg.model <- svyglm(formula = J0.ref.OD ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+### J45
+
+#### crude
+
+```{r surveyglm J45.ref.OD crude, error=TRUE}
+reg.model <- svyglm(formula = J45.ref.OD ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J45.ref.OD a s y, error=TRUE}
+reg.model <- svyglm(formula = J45.ref.OD ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+### J0 abs
+
+#### crude
+
+
+```{r surveyglm J0.ref.OD abs crude, error=TRUE}
+reg.model <- svyglm(formula = abs(J0.ref.OD) ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J0.ref.OD abs a s y, error=TRUE}
+reg.model <- svyglm(formula = abs(J0.ref.OD) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+
+
+
+
+### J45 abs
+
+
+#### crude
+
+```{r surveyglm J45.ref.OD abs crude, error=TRUE}
+reg.model <- svyglm(formula = abs(J45.ref.OD) ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J45.ref.OD abs a s y, error=TRUE}
+reg.model <- svyglm(formula = abs(J45.ref.OD) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+
+
+
+### K power
+
+#### crude
+
+```{r surveyglm K crude old, error=TRUE}
+reg.model <- svyglm(formula = VIXKRDM ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm K 1 old, error=TRUE}
+reg.model <- svyglm(formula = VIXKRDM ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+#### a, s, y, ethnicity
+```{r surveyglm K old, error=TRUE}
+reg.model <- svyglm(formula = VIXKRDM ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+#### a, s, y, e, SE
+```{r surveyglm K SE old, error=TRUE}
+reg.model <- svyglm(formula = VIXKRDM ~ as.factor(DMDEDUC2) + RIAGENDR + age + year + RIDRETH1 + SER, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+### Kera Asti 
+
+#### crude
+
+```{r surveyglm Kera Asti crude old, error=TRUE}
+reg.model <- svyglm(formula = asti.kera.cat ~ as.factor(DMDEDUC2), design = nhanes.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm Kera Asti old, error=TRUE}
+reg.model <- svyglm(formula = asti.kera.cat ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design, family=quasibinomial(logit))
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+
+### J0
+
+#### crude
+
+```{r surveyglm J0.kera.OD crude, error=TRUE}
+reg.model <- svyglm(formula = J0.kera.OD ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J0.kera.OD a s y, error=TRUE}
+reg.model <- svyglm(formula = J0.kera.OD ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+### J45
+
+#### crude
+
+```{r surveyglm J45.kera.OD crude, error=TRUE}
+reg.model <- svyglm(formula = J45.kera.OD ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J45.kera.OD a s y, error=TRUE}
+reg.model <- svyglm(formula = J45.kera.OD ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+### J0 abs
+
+#### crude
+
+
+```{r surveyglm J0.kera.OD abs crude, error=TRUE}
+reg.model <- svyglm(formula = abs(J0.kera.OD) ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J0.kera.OD abs a s y, error=TRUE}
+reg.model <- svyglm(formula = abs(J0.kera.OD) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+
+
+
+
+### J45 abs
+
+
+#### crude
+
+```{r surveyglm J45.kera.OD abs crude, error=TRUE}
+reg.model <- svyglm(formula = abs(J45.kera.OD) ~ as.factor(DMDEDUC2), design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+#### age, sex, year
+```{r surveyglm J45.kera.OD abs a s y, error=TRUE}
+reg.model <- svyglm(formula = abs(J45.kera.OD) ~ as.factor(DMDEDUC2) + RIAGENDR + age + year, design = nhanes.design)
+
+summary(reg.model)
+nobs(reg.model)
+round((coef(reg.model)), 2)
+round(confint(reg.model),2)
+rm(reg.model)
+
+```
+
+
+
